@@ -1,18 +1,16 @@
-/* 手柄输入：8 个 GPIO，接按键到 GND（内部上拉，低电平 = 按下）
+/* 手柄输入：方向 + A/B 外接 6 个 GPIO，SELECT/START 用板载按键
  *
  *   按键     引脚     J2 排针（板子右侧 2x24）
- *   UP       PC0
- *   DOWN     PC1
- *   LEFT     PC2
- *   RIGHT    PC3
- *   A        PE5
- *   B        PE6
- *   SELECT   PE2
- *   START    PC13
- *   GND      J2 的 9/10 脚
+ *   UP       PC0      17
+ *   DOWN     PC1      18
+ *   LEFT     PC2      19
+ *   RIGHT    PC3      20
+ *   A        PE5      14
+ *   B        PE6      15
+ *   GND               9 或 10
+ *   按键一端接引脚，另一端接 GND（内部上拉，低电平 = 按下）
  *
- * 另外板载按键也映射进来，不接线也能开始游戏:
- *   KEY0 (PE4) = START   KEY1 (PE3) = SELECT   WK_UP (PA0, 高电平有效) = A */
+ * 板载按键: KEY0 (PE4) = SELECT   KEY1 (PE3) = START   WK_UP (PA0, 高电平有效) = A */
 #ifndef INPUT_H
 #define INPUT_H
 

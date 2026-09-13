@@ -98,6 +98,7 @@ add_firmware(nes-emulator
     src/nes/rom_store.c
     src/nes/input.c
     src/nes/audio.c
+    src/nes/filebrowser.c
     src/nes/nes_common.c
 )
 target_include_directories(nes-emulator.elf PRIVATE src/nes)

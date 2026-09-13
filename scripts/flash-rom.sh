@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 把 .nes 文件烧进板子的 Flash ROM 存储区（0x08040000），不需要 SD 卡
 # 用法: scripts/flash-rom.sh roms/xxx.nes
-# 固件启动时如果 SD 卡上没有这个 ROM，会自动导出一份到 SD:/NES/
+# 固件启动时如果 SD 卡上没有这个 ROM，会自动导出一份到 SD:/NES/ROMS/
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ $# -eq 1 ] || { echo "用法: $0 <rom.nes>"; exit 1; }

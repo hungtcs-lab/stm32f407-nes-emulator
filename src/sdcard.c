@@ -45,25 +45,41 @@ static int acmd41_wait_ready(uint32_t timeout_ms)
     __SDIO_ENABLE(SDIO);
     HAL_Delay(10);
 
-    SDMMC_CmdGoIdleState(SDIO);
-    SDMMC_CmdOperCond(SDIO);
-    uint32_t t0 = HAL_GetTick(), ocr = 0;
+    /* 冷启动时卡可能对刚开始的几条命令不应答：不要一次失败就放弃，
+     * 在超时时间内反复 CMD0 → CMD8 → (CMD55 + ACMD41) */
+    uint32_t t0 = HAL_GetTick(), ocr = 0, tries = 0;
+    uint32_t e0 = 0, e8 = 0, e55 = 0, e41 = 0;
+    int need_reset = 1;
     do {
-        if (SDMMC_CmdAppCommand(SDIO, 0) != 0) break;
-        if (SDMMC_CmdAppOperCommand(SDIO, SDMMC_VOLTAGE_WINDOW_SD | SDMMC_HIGH_CAPACITY |
-                                          SD_SWITCH_1_8V_CAPACITY) != 0) break;
-        ocr = SDIO_GetResponse(SDIO, SDIO_RESP1);
-        if (ocr & 0x80000000u) break;
-        HAL_Delay(10);
+        if (need_reset) {
+            e0 = SDMMC_CmdGoIdleState(SDIO);
+            e8 = SDMMC_CmdOperCond(SDIO);
+            need_reset = 0;
+        }
+        tries++;
+        e55 = SDMMC_CmdAppCommand(SDIO, 0);
+        if (e55 == 0) {
+            e41 = SDMMC_CmdAppOperCommand(SDIO, SDMMC_VOLTAGE_WINDOW_SD | SDMMC_HIGH_CAPACITY |
+                                                SD_SWITCH_1_8V_CAPACITY);
+            if (e41 == 0) {
+                ocr = SDIO_GetResponse(SDIO, SDIO_RESP1);
+                if (ocr & 0x80000000u) break;
+            }
+        }
+        if (e55 || e41) need_reset = 1;   /* 命令没应答：重新从 CMD0 开始 */
+        HAL_Delay(20);
     } while (HAL_GetTick() - t0 < timeout_ms);
 
     SDIO_PowerState_OFF(SDIO);
     HAL_Delay(10);
     if (!(ocr & 0x80000000u)) {
-        log_printf("  SD not ready after %lums, OCR=%08lX\n",
-                   (unsigned long)(HAL_GetTick() - t0), (unsigned long)ocr);
+        log_printf("  SD not ready %lums tries=%lu OCR=%08lX err CMD0=%lX CMD8=%lX CMD55=%lX ACMD41=%lX\n",
+                   (unsigned long)(HAL_GetTick() - t0), (unsigned long)tries, (unsigned long)ocr,
+                   (unsigned long)e0, (unsigned long)e8, (unsigned long)e55, (unsigned long)e41);
         return -1;
     }
+    if (tries > 1 || HAL_GetTick() - t0 > 200)
+        log_printf("  SD ready after %lums, %lu tries\n", (unsigned long)(HAL_GetTick() - t0), (unsigned long)tries);
     return 0;
 }
 
@@ -102,7 +118,7 @@ int sd_init(void)
             return 0;
         }
         HAL_SD_DeInit(&hsd);
-        HAL_Delay(50);
+        HAL_Delay(200);
     }
     return -1;
 }

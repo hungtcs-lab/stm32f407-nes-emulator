@@ -10,7 +10,7 @@
  *   NES_AUTOPLAY="start:150-156,right:300-600"  按帧号自动按键，无人值守测试用
  *   NES_CRC_FRAMES="100,300,450,600"             这些帧算画面 CRC32，和 host/nes_host 输出对比
  *   NES_NO_PACING                                不限速，测最高帧率
- *   NES_AUTOSTART_MS=3000                        菜单无操作自动开始的时间
+ *   NES_AUTOSTART_MS=3000                        菜单无操作 N 毫秒后自动开始（默认 0 = 不自动开始，只给无人值守测试用）
  *   NES_BENCH                                    统计第 300~900 帧的平均耗时并写日志
  *   NES_FRAMESKIP=n                              固定跳帧、关闭自动降级（n=60000 相当于完全不渲染，测纯 CPU 模拟开销）
  *   NES_NO_INTERLACE                             自动降级时不使用隔行渲染，直接跳帧
@@ -19,7 +19,7 @@
  *   NES_TEST_SAVE                                把任何 ROM 都当成带电池，每次检查前改一下 SRAM[0]，测存档流程
  *   NES_SAVE_CHECK_FRAMES=n                      存档检查间隔（帧），默认 1800
  *
- * 存档: 带电池的游戏（iNES 头 flags6 bit1）会把 SRAM 存到 SD:/NES/<ROM 名>.sav
+ * 存档: 带电池的游戏（iNES 头 flags6 bit1）会把 SRAM 存到 SD:/NES/SAVE/<ROM 名>.sav
  *       开始游戏时读回；游戏中每 30 秒检查一次，有变化就写；退回菜单时也写
  */
 #include "InfoNES.h"
@@ -33,6 +33,7 @@
 #include "rom_store.h"
 #include "input.h"
 #include "audio.h"
+#include "filebrowser.h"
 #include "nes_common.h"
 
 #include <stdarg.h>
@@ -42,7 +43,7 @@
 #include <strings.h>
 
 #ifndef NES_AUTOSTART_MS
-#define NES_AUTOSTART_MS 5000
+#define NES_AUTOSTART_MS 0   /* 0 = 等按键；scripts/nes-bench.sh 会设成 500 */
 #endif
 #ifndef NES_SAVE_CHECK_FRAMES
 #define NES_SAVE_CHECK_FRAMES 1800   /* 30 秒 */
@@ -56,7 +57,10 @@
 
 #define NES_ROM_RAM_MAX  (44u * 1024u)       /* 放得下 SMB（40KB）这类 NROM */
 #define NES_X0           ((320 - NES_DISP_WIDTH) / 2)
-#define ROM_DIR          "/NES"
+#define NES_DIR          "/NES"
+#define ROM_DIR          "/NES/ROMS"     /* .nes */
+#define SAVE_DIR         "/NES/SAVE"     /* 存档 .sav */
+#define LAST_FILE        "/NES/LAST.TXT" /* 上次玩的游戏 */
 #define MAX_ROMS         32
 
 /* InfoNES 自带调色板转成 RGB565（绿色最低位恒为 0，留给 NES_BG_FLAG）*/
@@ -114,13 +118,56 @@ static void text(int x, int y, uint16_t fg, const char *fmt, ...)
 }
 
 /* ---------------- SD 卡 ---------------- */
+static void migrate_old_layout(void);
+
 static int sd_mount(void)
 {
     if (s_sd_ok) return 0;
     if (f_mount(&s_fs, "", 1) != FR_OK) return -1;
-    f_mkdir(ROM_DIR);                  /* 已存在会返回 FR_EXIST，忽略 */
+    f_mkdir(NES_DIR);                  /* 已存在会返回 FR_EXIST，忽略 */
+    f_mkdir(ROM_DIR);
+    f_mkdir(SAVE_DIR);
+    migrate_old_layout();
     s_sd_ok = 1;
     return 0;
+}
+
+/* 兼容旧目录结构：
+ *   /NES 下的 .nes       → /NES/ROMS/
+ *   /NES 下的 .sav       → /NES/SAVE/
+ *   /NES/SAVE/LAST.TXT   → /NES/LAST.TXT */
+static void move_file(const char *from, const char *to)
+{
+    FILINFO fno;
+    if (f_stat(from, &fno) != FR_OK) return;
+    f_unlink(to);                        /* 目标已存在时以旧位置的为准 */
+    FRESULT fr = f_rename(from, to);
+    log_printf("migrate: %s -> %s %s\n", from, to, fr == FR_OK ? "ok" : "FAIL");
+}
+
+static void migrate_old_layout(void)
+{
+    static char names[MAX_ROMS][64];
+    int n = 0;
+    DIR dir;
+    FILINFO fno;
+    if (f_opendir(&dir, NES_DIR) == FR_OK) {
+        while (n < MAX_ROMS && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+            if (fno.fattrib & AM_DIR) continue;
+            size_t len = strlen(fno.fname);
+            if (len > 4 && (strcasecmp(fno.fname + len - 4, ".nes") == 0 || strcasecmp(fno.fname + len - 4, ".sav") == 0))
+                snprintf(names[n++], 64, "%.63s", fno.fname);
+        }
+        f_closedir(&dir);   /* 遍历完再改名，不在遍历途中改目录 */
+    }
+    for (int i = 0; i < n; i++) {
+        char from[96], to[96];
+        size_t len = strlen(names[i]);
+        snprintf(from, sizeof from, NES_DIR "/%.63s", names[i]);
+        snprintf(to, sizeof to, "%s/%.63s", strcasecmp(names[i] + len - 4, ".nes") == 0 ? ROM_DIR : SAVE_DIR, names[i]);
+        move_file(from, to);
+    }
+    move_file(SAVE_DIR "/LAST.TXT", LAST_FILE);
 }
 
 static int has_nes_ext(const char *name)
@@ -176,7 +223,7 @@ static void export_store_to_sd(void)
 static void last_save(const char *name)
 {
     FIL f;
-    if (!s_sd_ok || f_open(&f, ROM_DIR "/LAST.TXT", FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return;
+    if (!s_sd_ok || f_open(&f, LAST_FILE, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return;
     UINT bw;
     f_write(&f, name, (UINT)strlen(name), &bw);
     f_close(&f);
@@ -185,7 +232,7 @@ static void last_save(const char *name)
 static int last_load(char *out, size_t size)
 {
     FIL f;
-    if (!s_sd_ok || f_open(&f, ROM_DIR "/LAST.TXT", FA_READ) != FR_OK) return -1;
+    if (!s_sd_ok || f_open(&f, LAST_FILE, FA_READ) != FR_OK) return -1;
     UINT br = 0;
     f_read(&f, out, (UINT)(size - 1), &br);
     f_close(&f);
@@ -211,7 +258,7 @@ static void save_path_for(const char *rom)
 {
     const char *dot = strrchr(rom, '.');
     int n = dot ? (int)(dot - rom) : (int)strlen(rom);
-    snprintf(s_save_path, sizeof s_save_path, ROM_DIR "/%.*s.sav", n, rom);
+    snprintf(s_save_path, sizeof s_save_path, SAVE_DIR "/%.*s.sav", n, rom);
 }
 
 static void sram_load(void)
@@ -245,11 +292,10 @@ static void sram_save_if_changed(void)
     log_printf("save: write %s %s (SRAM[0]=%u)\n", s_save_path, bw == SRAM_SIZE ? "ok" : "FAIL", SRAM[0]);
 }
 
-/* 从 SD 读 ROM：小的进 RAM，大的写 Flash 存储区（已经是同一个就跳过） */
-static int load_from_sd(const char *name)
+/* 从 SD 读 ROM：小的进 RAM，大的写 Flash 存储区（已经是同一个就跳过）
+ * path 是完整路径，name 是文件名（用于显示、存档名和 Flash 存储区记录）*/
+static int load_from_sd(const char *path, const char *name)
 {
-    char path[96];
-    snprintf(path, sizeof path, ROM_DIR "/%s", name);
     FIL f;
     if (f_open(&f, path, FA_READ) != FR_OK) return -1;
     uint32_t size = (uint32_t)f_size(&f);
@@ -326,12 +372,18 @@ static uint8_t wait_buttons_released(void)
 static int s_autostart_off;   /* 加载失败过就不再自动开始，免得反复加载同一个坏 ROM */
 
 /* 显示一次菜单并加载选中的 ROM。成功返回 0 */
-static int menu_once(void)
+static void draw_menu_header(void)
 {
-    static char names[MAX_ROMS][64];
     lcd_fill(C_BLACK);
     lcd_draw_string_scaled(60, 8, "NES", 3, C_RED, C_BLACK);
     text(140, 24, C_GRAY, "STM32F407 InfoNES");
+}
+
+static int menu_once(void)
+{
+    static char names[MAX_ROMS][64];
+    char browse_path[128] = "";
+    draw_menu_header();
 
     int sd = (sd_init() == 0 && sd_mount() == 0);
     if (sd) export_store_to_sd();
@@ -343,10 +395,17 @@ static int menu_once(void)
     int sel = 0;
     if (n == 0) {
         if (!store) {
-            text(8, 80, C_RED, sd ? "No ROM in SD:/NES/" : "SD card not found");
+            text(8, 80, C_RED, sd ? "No ROM in SD:/NES/ROMS/" : "SD card not found");
             text(8, 100, C_WHITE, "and flash ROM store is empty.");
             text(8, 130, C_GRAY, "PC: scripts/flash-rom.sh xxx.nes");
-            for (;;) HAL_Delay(1000);
+            if (sd) text(8, 222, C_GRAY, "B: browse SD card");
+            for (;;) {
+                if (sd && (input_read() & NES_BTN_B)) {
+                    if (file_browser(browse_path, sizeof browse_path)) goto load;
+                    return -1;   /* 重新进菜单 */
+                }
+                HAL_Delay(20);
+            }
         }
     } else {
         char last[64];
@@ -358,7 +417,8 @@ static int menu_once(void)
     }
 
     /* 列表 + 自动开始倒计时 */
-    const int top = 52, rows = 8;
+    /* 屏幕高 240，字高 16：列表 48~176，倒计时 180，帮助 204/222（最后一行到 238）*/
+    const int top = 48, rows = 8;
     uint32_t t_last = HAL_GetTick();
     uint8_t prev = wait_buttons_released();
     int drawn_sel = -1, drawn_left = -1;
@@ -373,14 +433,15 @@ static int menu_once(void)
                     text(8, top + (i - first) * 16, i == sel ? C_YELLOW : C_WHITE, "%c %.36s",
                          i == sel ? '>' : ' ', names[i]);
             }
-            text(8, 212, C_GRAY, "UP/DOWN/SELECT(KEY1): choose");
-            text(8, 228, C_GRAY, "A/START(KEY0): play");
+            text(8, 204, C_GRAY, "UP/DOWN/SELECT(KEY0): choose  B: files");
+            text(8, 222, C_GRAY, "A/START(KEY1): play");
             drawn_sel = sel;
         }
-        int left = s_autostart_off ? 1000000 : (int)NES_AUTOSTART_MS - (int)(HAL_GetTick() - t_last);
+        int autostart = (NES_AUTOSTART_MS > 0) && !s_autostart_off;
+        int left = autostart ? (int)NES_AUTOSTART_MS - (int)(HAL_GetTick() - t_last) : 1000000;
         if (left / 1000 != drawn_left) {
-            lcd_fill_rect(0, 196, 320, 16, C_BLACK);
-            if (left > 0 && !s_autostart_off) text(8, 196, C_CYAN, "auto start in %d s", left / 1000 + 1);
+            lcd_fill_rect(0, 180, 320, 16, C_BLACK);
+            if (autostart && left > 0) text(8, 180, C_CYAN, "auto start in %d s", left / 1000 + 1);
             drawn_left = left / 1000;
         }
         if (left <= 0) break;
@@ -389,14 +450,34 @@ static int menu_once(void)
         prev = b;
         if (pressed) t_last = HAL_GetTick();
         if (pressed & (NES_BTN_A | NES_BTN_START)) break;
-        if (n && (pressed & (NES_BTN_DOWN | NES_BTN_SELECT))) sel = (sel + 1) % n;   /* SELECT 也能翻：只用板载按键时 KEY1 翻页 */
+        if (sd && (pressed & NES_BTN_B)) {
+            if (file_browser(browse_path, sizeof browse_path)) break;
+            draw_menu_header();
+            drawn_sel = -1; drawn_left = -1;
+            prev = wait_buttons_released();
+            continue;
+        }
+        if (n && (pressed & (NES_BTN_DOWN | NES_BTN_SELECT))) sel = (sel + 1) % n;   /* SELECT 也能翻：只用板载按键时 KEY0 翻页 */
         if (n && (pressed & NES_BTN_UP))   sel = (sel + n - 1) % n;
         HAL_Delay(20);
     }
 
-    lcd_fill_rect(0, 196, 320, 44, C_BLACK);
-    text(8, 196, C_WHITE, "Loading ...");
-    int r = (n > 0) ? load_from_sd(names[sel]) : load_from_store();
+load:
+    lcd_fill_rect(0, 180, 320, 60, C_BLACK);
+    text(8, 180, C_WHITE, "Loading ...");
+    int r;
+    int from_list = 0;
+    if (browse_path[0]) {                      /* 从文件管理里选的 */
+        const char *slash = strrchr(browse_path, '/');
+        r = load_from_sd(browse_path, slash ? slash + 1 : browse_path);
+    } else if (n > 0) {
+        char path[96];
+        snprintf(path, sizeof path, ROM_DIR "/%s", names[sel]);
+        r = load_from_sd(path, names[sel]);
+        from_list = 1;
+    } else {
+        r = load_from_store();
+    }
 #ifdef NES_TEST_LOAD_FAIL
     { static int once; if (!once++) r = -99; }
 #endif
@@ -407,7 +488,7 @@ static int menu_once(void)
     if (InfoNES_Load(s_rom_name) != 0) {   /* 比如不支持的 Mapper，InfoNES 自己会弹提示 */
         return -1;
     }
-    if (n > 0) last_save(names[sel]);
+    if (from_list) last_save(names[sel]);
 #ifdef NES_NO_AUDIO
     APU_Mute = 1;
 #else

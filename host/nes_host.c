@@ -1,6 +1,6 @@
 /* 主机端 InfoNES 测试程序：不需要板子，验证模拟器核心和移植补丁
  *
- * 用法: nes_host <rom.nes> [--frames N] [--shots 60,300] [--out DIR] [--input "start:120-126"] [--interlace 1] [--audio 1]
+ * 用法: nes_host <rom.nes> [--frames N] [--shots 60,300] [--out DIR] [--input "start:120-126"] [--interlace 1] [--audio 1] [--raw 1]
  * 输出: 每个截图帧打印 CRC32（算法和 MCU 一致，可以直接比对），并保存 PPM */
 #include "InfoNES.h"
 #include "InfoNES_System.h"
@@ -35,6 +35,7 @@ static uint16_t g_fb[NES_DISP_WIDTH * NES_DISP_HEIGHT];
 static int g_menu_calls;
 static int g_interlace;
 static int g_audio;
+static int g_raw;     /* 1 = 像素不清背景标记位（对应 MCU 的 NES_LCD_DMA）*/
 
 static int in_list(const char *list, unsigned v)
 {
@@ -103,7 +104,7 @@ void InfoNES_ReleaseRom()
 void InfoNES_LoadLine(int nLine, const WORD *pLine)
 {
     if (nLine < 0 || nLine >= NES_DISP_HEIGHT) return;
-    for (int x = 0; x < NES_DISP_WIDTH; x++) g_fb[nLine * NES_DISP_WIDTH + x] = nes_to_rgb565(pLine[x]);
+    for (int x = 0; x < NES_DISP_WIDTH; x++) g_fb[nLine * NES_DISP_WIDTH + x] = g_raw ? pLine[x] : nes_to_rgb565(pLine[x]);
 }
 
 void InfoNES_LoadFrame() {}
@@ -152,6 +153,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--shots")) g_shots = argv[i + 1];
         else if (!strcmp(argv[i], "--interlace")) g_interlace = atoi(argv[i + 1]);
         else if (!strcmp(argv[i], "--audio")) g_audio = atoi(argv[i + 1]);
+        else if (!strcmp(argv[i], "--raw")) g_raw = atoi(argv[i + 1]);
     }
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);

@@ -18,7 +18,7 @@ for i in $(seq 1 ${WAIT:-60}); do
     [ $((i % 10)) -eq 0 ] || continue
     out=$(ELF=build-bench/nes-emulator.elf ./scripts/diag.py build-bench/nes-emulator.elf 2>&1)
     if grep -q 'bench 300-900' <<<"$out" && { [ -z "${CRC:-}" ] || [ "$(grep -c ' crc ' <<<"$out")" -ge "$(tr ',' '\n' <<<"$CRC" | wc -l)" ]; }; then
-        grep -E 'g_nes|bench|run:|crc|load:|export|menu' <<<"$out"; exit 0
+        grep -E 'g_nes|bench|run:|crc|load:|export|menu|readback|dma errors' <<<"$out"; exit 0
     fi
 done
 echo "timeout"; ./scripts/diag.py build-bench/nes-emulator.elf 2>&1 | tail -8

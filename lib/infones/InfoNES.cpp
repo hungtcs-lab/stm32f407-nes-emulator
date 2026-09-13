@@ -159,7 +159,8 @@ WORD DoubleFrame[ 2 ][ NES_DISP_WIDTH * NES_DISP_HEIGHT ];
 WORD *WorkFrame;
 WORD WorkFrameIdx;
 #else
-WORD WorkLine[ NES_DISP_WIDTH ];   /* [port] 原为整帧 WorkFrame */
+WORD WorkLineBuf[ 2 ][ NES_DISP_WIDTH ];   /* [port] 原为整帧 WorkFrame */
+WORD *WorkLine = WorkLineBuf[ 0 ];         /* [port] 当前渲染用的行缓冲，平台层可以轮换（DMA 推屏时免拷贝）*/
 #endif
 
 /* Character Buffer */

@@ -196,7 +196,8 @@ extern WORD *WorkFrame;
 extern WORD WorkFrameIdx;
 #else
 /* [port] 原为整帧 WorkFrame[256*240]，改为单行缓冲，画完一行调 InfoNES_LoadLine() */
-extern WORD WorkLine[ NES_DISP_WIDTH ];
+extern WORD WorkLineBuf[ 2 ][ NES_DISP_WIDTH ];
+extern WORD *WorkLine;
 #endif
 
 extern BYTE ChrBuf[];

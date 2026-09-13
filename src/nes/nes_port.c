@@ -15,6 +15,8 @@
  *   NES_FRAMESKIP=n                              固定跳帧、关闭自动降级（n=60000 相当于完全不渲染，测纯 CPU 模拟开销）
  *   NES_NO_INTERLACE                             自动降级时不使用隔行渲染，直接跳帧
  *   NES_NO_AUDIO                                 关掉声音（APU 不模拟，省 CPU）
+ *   NES_NO_LCD_DMA                               推屏不用 DMA，CPU 逐像素写（默认用 DMA，每帧省约 2.7ms）
+ *   NES_LCD_DMA_VERIFY                           测试用：检查帧的第 120 行从 LCD 显存读回比对
  *   NES_MENU_PICK="2048.nes"                     菜单默认选中指定文件（自动化测试用）
  *   NES_TEST_SAVE                                把任何 ROM 都当成带电池，每次检查前改一下 SRAM[0]，测存档流程
  *   NES_SAVE_CHECK_FRAMES=n                      存档检查间隔（帧），默认 1800
@@ -53,6 +55,9 @@
 #endif
 #ifndef NES_CRC_FRAMES
 #define NES_CRC_FRAMES ""
+#endif
+#ifndef NES_NO_LCD_DMA
+#define NES_LCD_DMA 1
 #endif
 
 #define NES_ROM_RAM_MAX  (44u * 1024u)       /* 放得下 SMB（40KB）这类 NROM */
@@ -116,6 +121,8 @@ static void text(int x, int y, uint16_t fg, const char *fmt, ...)
     va_end(ap);
     lcd_draw_string(x, y, buf, fg, C_BLACK);
 }
+
+static inline void lcd_dma_wait(void);   /* 定义在推屏部分 */
 
 /* ---------------- SD 卡 ---------------- */
 static void migrate_old_layout(void);
@@ -509,6 +516,7 @@ load:
 
 int InfoNES_Menu()
 {
+    lcd_dma_wait();
     sram_save_if_changed();   /* 从游戏退回菜单时 */
 #ifndef NES_NO_AUDIO
     audio_silence();
@@ -560,9 +568,8 @@ static uint32_t s_crc;
 static int s_crc_this_frame;
 static uint32_t s_lcd_cyc;
 
-void InfoNES_LoadLine(int y, const WORD *line)
+static inline void lcd_set_line_window(int y)
 {
-    uint32_t c0 = DWT->CYCCNT;
     /* 直接写 ILI9341 窗口命令（不调 lcd.c，避免跳回 Flash）*/
     const uint16_t x1 = NES_X0 + NES_DISP_WIDTH - 1;
     LCD_CMD_PORT = 0x2A; LCD_DATA_PORT = NES_X0 >> 8; LCD_DATA_PORT = NES_X0 & 0xFF;
@@ -570,6 +577,80 @@ void InfoNES_LoadLine(int y, const WORD *line)
     LCD_CMD_PORT = 0x2B; LCD_DATA_PORT = (uint16_t)(y >> 8); LCD_DATA_PORT = (uint16_t)(y & 0xFF);
     LCD_DATA_PORT = (uint16_t)(y >> 8); LCD_DATA_PORT = (uint16_t)(y & 0xFF);
     LCD_CMD_PORT = 0x2C;
+}
+
+#ifdef NES_LCD_DMA
+/* ---------------- DMA 推屏 ----------------
+ * DMA2 Stream1 内存到内存模式：源 = 行缓冲（主 SRAM，递增），目标 = LCD 数据口（固定地址）。
+ * 核心有两块行缓冲轮流用：DMA 发这一块时，CPU 往另一块里画下一行，不用拷贝。
+ * 背景标记位（bit5，绿色最低位）不再清掉，只让背景色像素的绿色差 1/63，看不出来 */
+#define LCD_DMA   DMA2_Stream1
+
+uint32_t g_lcd_dma_errors;   /* 传输出错或没传完的行数（调试器可读）*/
+
+static void lcd_dma_init(void)
+{
+    __HAL_RCC_DMA2_CLK_ENABLE();
+    LCD_DMA->CR = 0;
+    while (LCD_DMA->CR & DMA_SxCR_EN) {}
+    LCD_DMA->M0AR = 0x60080000u;                        /* 目标：LCD 数据口 */
+    LCD_DMA->FCR  = DMA_SxFCR_DMDIS | DMA_SxFCR_FTH;   /* 内存到内存必须用 FIFO 模式 */
+    LCD_DMA->CR   = DMA_SxCR_DIR_1 | DMA_SxCR_PINC |    /* DIR=10 内存到内存，源地址递增 */
+                    DMA_SxCR_PSIZE_0 | DMA_SxCR_MSIZE_0;
+}
+
+/* 等上一行传完。窗口命令、画字符这些 CPU 直接写屏的操作之前都要先调 */
+static inline void lcd_dma_wait(void)
+{
+    while (LCD_DMA->CR & DMA_SxCR_EN) {}
+}
+
+void InfoNES_LoadLine(int y, const WORD *line)
+{
+    uint32_t c0 = DWT->CYCCNT;
+    lcd_dma_wait();
+    s_lcd_cyc += DWT->CYCCNT - c0;       /* 统计里只算"等 DMA + 发命令"的时间 */
+    c0 = DWT->CYCCNT;
+
+    /* 检查上一行：传输错误 / 直接模式错误，或者 NDTR 没归零 */
+    if ((DMA2->LISR & (DMA_LISR_TEIF1 | DMA_LISR_DMEIF1)) || LCD_DMA->NDTR != 0) g_lcd_dma_errors++;
+
+    lcd_set_line_window(y);
+    if (s_crc_this_frame) s_crc = nes_crc32(s_crc, (const uint8_t *)line, NES_DISP_WIDTH * 2);
+
+    DMA2->LIFCR   = 0x3Fu << 6;           /* 清 Stream1 的全部标志 */
+    LCD_DMA->PAR  = (uint32_t)line;
+    LCD_DMA->NDTR = NES_DISP_WIDTH;
+    LCD_DMA->CR  |= DMA_SxCR_EN;
+
+#ifdef NES_LCD_DMA_VERIFY
+    /* 测试用：检查帧的第 120 行传完后从 LCD 显存读回来逐像素比对（ILI9341 读 GRAM 返回 18 位色，还原成 565 是精确的）*/
+    if (s_crc_this_frame && y == 120) {
+        lcd_dma_wait();
+        int bad = 0;
+        for (int x = 0; x < NES_DISP_WIDTH; x++) {
+            lcd_set_window(NES_X0 + x, y, NES_X0 + x, y);
+            LCD_CMD_PORT = 0x2E;
+            (void)LCD_DATA_PORT;
+            uint16_t rg = LCD_DATA_PORT, b_ = LCD_DATA_PORT;
+            uint16_t px = (uint16_t)(((rg >> 11) & 0x1F) << 11 | ((rg >> 2) & 0x3F) << 5 | ((b_ >> 11) & 0x1F));
+            if (px != line[x]) bad++;
+        }
+        log_printf("readback line 120: %d/256 mismatch\n", bad);
+    }
+#endif
+
+    /* 下一行画到另一块缓冲里 */
+    WorkLine = (line == WorkLineBuf[0]) ? WorkLineBuf[1] : WorkLineBuf[0];
+    s_lcd_cyc += DWT->CYCCNT - c0;
+}
+#else
+static inline void lcd_dma_wait(void) {}
+
+void InfoNES_LoadLine(int y, const WORD *line)
+{
+    uint32_t c0 = DWT->CYCCNT;
+    lcd_set_line_window(y);
     if (s_crc_this_frame) {
         uint8_t le[NES_DISP_WIDTH * 2];
         for (int x = 0; x < NES_DISP_WIDTH; x++) {
@@ -584,6 +665,7 @@ void InfoNES_LoadLine(int y, const WORD *line)
     }
     s_lcd_cyc += DWT->CYCCNT - c0;
 }
+#endif
 
 void InfoNES_LoadFrame() {}
 
@@ -631,6 +713,7 @@ void InfoNES_PadState(DWORD *pad1, DWORD *pad2, DWORD *system)
 {
     static uint32_t last_cyc, win_start_cyc, win_frames, win_emu_cyc, win_lcd_cyc, quit_hold_ms, last_tick;
 
+    lcd_dma_wait();   /* 下面可能要画 fps 文字 */
     uint32_t now = DWT->CYCCNT;
     g_nes.frames++;
     s_field ^= 1;
@@ -640,11 +723,15 @@ void InfoNES_PadState(DWORD *pad1, DWORD *pad2, DWORD *system)
         static uint32_t b_cyc, b_lcd, b_work;
         if (g_nes.frames == 300) { b_cyc = now; b_lcd = 0; b_work = 0; }
         else if (g_nes.frames > 300 && g_nes.frames <= 900) { b_lcd += s_lcd_cyc; b_work += now - last_cyc; }
-        if (g_nes.frames == 900)
+        if (g_nes.frames == 900) {
+#ifdef NES_LCD_DMA
+            log_printf("lcd dma errors: %lu\n", (unsigned long)g_lcd_dma_errors);
+#endif
             log_printf("bench 300-900: %lu us/frame, work %lu us, lcd %lu us, skip %u, quality %d, audio p2p %u resync %lu\n",
                        (unsigned long)(cyc_to_us(now - b_cyc) / 600u), (unsigned long)(cyc_to_us(b_work) / 600u),
                        (unsigned long)(cyc_to_us(b_lcd) / 600u),
                        (unsigned)FrameSkip, s_quality, g_audio_p2p, (unsigned long)g_audio_resync);
+        }
     }
 #endif
 
@@ -776,6 +863,9 @@ void nes_run(void)
 {
     dwt_init();
     input_init();
+#ifdef NES_LCD_DMA
+    lcd_dma_init();
+#endif
 #ifndef NES_NO_AUDIO
     audio_init();
 #endif

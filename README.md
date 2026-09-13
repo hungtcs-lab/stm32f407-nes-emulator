@@ -195,4 +195,8 @@ PA4 输出不能直接驱动喇叭，请接功放模块，并确认功放和开�
 
 ## 许可
 
-InfoNES 核心使用 [Apache License 2.0](lib/infones/LICENSE)。游戏 ROM 请自行合法获取，本项目不提供。
+本项目使用 [Apache License 2.0](LICENSE) 开源，可以自由使用、修改和分发（包括商用），请保留版权和许可声明。
+
+- 模拟器核心 [InfoNES](https://github.com/jay-kumogata/InfoNES) 同样使用 [Apache License 2.0](lib/infones/LICENSE)，修改说明见 [PORTING.md](lib/infones/PORTING.md)
+- 编译时下载的 ST 官方 HAL、CMSIS 和 FatFs 遵循各自的许可证
+- 游戏 ROM 受版权保护，请自行合法获取，本项目不提供

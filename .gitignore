@@ -1,0 +1,12 @@
+build/
+build-*/
+*.map
+*.bin
+*.hex
+.cache/
+compile_commands.json
+third_party/
+
+
+roms/
+host/nes_host

@@ -17,6 +17,7 @@
  *   NES_NO_AUDIO                                 关掉声音（APU 不模拟，省 CPU）
  *   NES_NO_LCD_DMA                               推屏不用 DMA，CPU 逐像素写（默认用 DMA，每帧省约 2.7ms）
  *   NES_LCD_DMA_VERIFY                           测试用：检查帧的第 120 行从 LCD 显存读回比对
+ *   NES_SHOT_TIMES="300,500"                     测试用：到点自动截图存 SD（见 screenshot.h）
  *   NES_MENU_PICK="2048.nes"                     菜单默认选中指定文件（自动化测试用）
  *   NES_TEST_SAVE                                把任何 ROM 都当成带电池，每次检查前改一下 SRAM[0]，测存档流程
  *   NES_SAVE_CHECK_FRAMES=n                      存档检查间隔（帧），默认 1800
@@ -36,6 +37,7 @@
 #include "input.h"
 #include "audio.h"
 #include "filebrowser.h"
+#include "screenshot.h"
 #include "nes_common.h"
 
 #include <stdarg.h>
@@ -453,6 +455,7 @@ static int menu_once(void)
         }
         if (left <= 0) break;
 
+        screenshot_poll();
         uint8_t b = input_read(), pressed = b & ~prev;
         prev = b;
         if (pressed) t_last = HAL_GetTick();
@@ -811,6 +814,8 @@ void InfoNES_PadState(DWORD *pad1, DWORD *pad2, DWORD *system)
 #endif
         sram_save_if_changed();
     }
+
+    if (screenshot_poll()) s_deadline = 0;   /* 截图要几百毫秒，别让限速去追 */
 
     uint8_t b = input_read();
     const char *script = NES_AUTOPLAY;

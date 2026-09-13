@@ -4,6 +4,7 @@
 #include "input.h"
 #include "nes_common.h"
 #include "ff.h"
+#include "screenshot.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -258,6 +259,7 @@ static void view_file(const char *path, uint32_t fsize)
             drawn = top;
         }
 
+        screenshot_poll();
         uint8_t k = read_keys();
         int max_top = lines > rows ? lines - rows : 0;
         if (k & NES_BTN_B) break;
@@ -350,6 +352,7 @@ int file_browser(char *out, size_t out_size)
             drawn_first = first;
         }
 
+        screenshot_poll();
         uint8_t k = read_keys();
         if (k & NES_BTN_DOWN)  { if (sel + 1 < s_count) sel++; }
         if (k & NES_BTN_UP)    { if (sel > 0) sel--; }

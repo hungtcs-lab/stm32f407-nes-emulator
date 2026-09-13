@@ -7,6 +7,25 @@
   <img src="docs/3.2寸LCD液晶屏.png" alt="3.2 寸 ILI9341 液晶屏" width="360">
 </p>
 
+## 截图
+
+以下截图从开发板液晶屏的显存直接读出，是屏幕上的真实画面（320×240）。
+
+<table>
+  <tr>
+    <td align="center"><img src="screenshots/001.png" width="320" alt="游戏菜单"><br>游戏菜单</td>
+    <td align="center"><img src="screenshots/004.png" width="320" alt="文件管理"><br>文件管理</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/005.png" width="320" alt="查看文本文件"><br>查看文本文件</td>
+    <td align="center"><img src="screenshots/006.png" width="320" alt="超级马里奥 标题画面"><br>超级马里奥</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/007.png" width="320" alt="超级马里奥 游戏中"><br>超级马里奥（游戏中）</td>
+    <td align="center"><img src="screenshots/009.png" width="320" alt="魂斗罗 游戏中"><br>魂斗罗</td>
+  </tr>
+</table>
+
 ## 功能
 
 - 从 SD 卡读取 `.nes` 游戏，开机进入游戏菜单，自动选中上次玩的游戏
@@ -94,7 +113,7 @@ cmake -S . -B build -DNES_DEFS="NES_NO_AUDIO"
 
 - 目录不存在会自动创建，只需要把游戏放进 `/NES/ROMS/`
 - 文件名请用英文和数字，中文会显示成 `?`
-- 单个游戏最大 256KB
+- 单个游戏文件最大约 256KB（262,016 字节）。程序 ROM 本身就有 256KB 的游戏（如洛克人 2、最终幻想、塞尔达 2）加上文件头会超出，暂时放不下
 
 ### 没有 SD 卡？
 
@@ -146,7 +165,9 @@ cmake -S . -B build -DNES_DEFS="NES_NO_AUDIO"
 
 ## 兼容性
 
-支持大部分常见 Mapper（0 / 1 / 2 / 3 / 4 等），超级马里奥、魂斗罗等经典游戏都可以运行。
+支持大部分常见 Mapper（0 / 1 / 2 / 3 / 4 等），超级马里奥、魂斗罗等经典游戏都可以运行。实际测试过的游戏：Super Mario Bros.、Contra、2048。
+
+受限于开发板 Flash 容量，游戏文件不能超过约 256KB，因此超级马里奥 3、星之卡比等大容量游戏暂时无法运行。
 
 以下 Mapper 暂不支持，选中后会提示 `unsupported`：5（MMC5）、6、19、85（VRC7）、188、235。
 
